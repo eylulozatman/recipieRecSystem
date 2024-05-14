@@ -29,58 +29,35 @@ recipe_data['combined_features'] = recipe_data['total_time'] + ' ' + recipe_data
 tfidf_vectorizer = TfidfVectorizer(stop_words='english')
 tfidf_matrix = tfidf_vectorizer.fit_transform(recipe_data['combined_features'])
 cosine_sim = linear_kernel(tfidf_matrix, tfidf_matrix)
-
 def get_recommendations(title=None, ingredients=None):
-    if title is None and ingredients is None:
-        return "Lütfen en az bir parametre belirtin."
-    
-    if title is None and ingredients:
-        # Sadece ingredients parametresine göre eşleşen tarifleri bul
-        matching_recipes = recipe_data[recipe_data['combined_features'].str.contains(ingredients, case=False)]
-    elif title and ingredients is None:
-        # Sadece title parametresine göre eşleşen tarifleri bul
-        matching_recipes = recipe_data[recipe_data['recipe_name'].str.contains(title, case=False)]
-    else:
-        # Hem title hem de ingredients parametrelerine göre eşleşen tarifleri bul
-        title_matches = recipe_data[recipe_data['recipe_name'].str.contains(title, case=False)]
-        ingredients_matches = recipe_data[recipe_data['combined_features'].str.contains(ingredients, case=False)]
-        matching_recipes = pd.concat([title_matches, ingredients_matches]).drop_duplicates()
-    
+    matching_recipes = recipe_data
+
+    if title:
+        matching_recipes = matching_recipes[matching_recipes['recipe_name'].str.contains(title, case=False)]
+
+    if ingredients:
+        ingredient_query = '|'.join(ingredients)
+        matching_recipes = matching_recipes[matching_recipes['ingredients'].str.contains(ingredient_query, case=False)]
+
     if matching_recipes.empty:
-        print(f"No recipes found for '{title}' with provided ingredients. Try a different search term or ingredients.")
         return []
 
-    # Use the first matching recipe as the selected recipe
-    selected_recipe_row = matching_recipes.iloc[0]
-
-    # Get the index of the selected recipe
-    idx = selected_recipe_row.name
-
-    # Get the pairwise similarity scores based on ingredients and cuisine
-    combined_features_with_ingredients = recipe_data['total_time'] + ' ' + recipe_data['ingredients'] + ' ' + recipe_data['cuisine_path'] + ' ' + ingredients
+    combined_features_with_ingredients = matching_recipes['total_time'] + ' ' + matching_recipes['ingredients'] + ' ' + matching_recipes['cuisine_path']
     tfidf_matrix_with_ingredients = tfidf_vectorizer.fit_transform(combined_features_with_ingredients)
     cosine_sim_with_ingredients = linear_kernel(tfidf_matrix_with_ingredients, tfidf_matrix_with_ingredients)
-    sim_scores = list(enumerate(cosine_sim_with_ingredients[idx]))
-
-    # Sort the recipes based on similarity scores
+    
+    # Calculate similarity scores for matched recipes
+    sim_scores = []
+    for i in range(len(matching_recipes)):
+        sim_scores.append((i, cosine_sim_with_ingredients[i,-1]))  # similarity score for the last recipe
+    
     sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)
-
-    # Get the top 5 similar recipes
-    sim_recipes = sim_scores[1:6]  # Top 5 similar recipes
-
-    # Get the recipe indices
+    sim_recipes = sim_scores[:5]  # Take the top 5 similar recipes
     recipe_indices = [i[0] for i in sim_recipes]
+    recommended_recipes = [matching_recipes.iloc[idx] for idx in recipe_indices]
 
-    # Create a list to store recommended recipes
-    recommended_recipes = []
-
-    # Iterate over the indices and add recipe information to the list
-    for idx in recipe_indices:
-        recommended_recipe = recipe_data.iloc[idx]
-        recommended_recipes.append(create_recommendation_object(recommended_recipe))
-
-    # Return the list of recommended recipes
     return recommended_recipes
+
 
 
 
@@ -94,39 +71,29 @@ def recommend():
     title = request.args.get('title')
     ingredients = request.args.get('ingredients')
     
+    if not title and not ingredients:
+        return jsonify({'error': 'Please provide at least one parameter.'}), 400
+
     if ingredients and ":" in ingredients:
-        ingredients = formatDataIng(ingredients)
+        ingredients = format_data_ingredients(ingredients)
 
     recommendations = get_recommendations(title, ingredients)
 
     if not recommendations:
-        print(f"No recipes found for '{title}' with provided ingredients. Try a different search term or ingredients.")
-        return jsonify([])
+        return jsonify({'message': 'No recipes found matching the criteria.'}), 404
 
-    return jsonify({'recommendations': [vars(recommendation) for recommendation in recommendations]})
+    # Convert recommendations to RecipeRecommendationObject
+    recommendation_objects = [create_recommendation_object(recipe) for recipe in recommendations]
 
+    return jsonify({'recommendations': [vars(obj) for obj in recommendation_objects]})
 
-def formatDataIng(ingredients):
-    # Boş bir dize oluştur
-    formatted_ingredients = ""
-    
-    # Her bir malzeme için döngü başlat
+def format_data_ingredients(ingredients):
+    formatted_ingredients = []
     for ingredient in ingredients.split(','):
-        # Malzemeyi ve ölçeği ayır
         parts = ingredient.strip().split(':')
-        # Malzemeyi al
-        if len(parts) > 1:
-            ingredient_name = parts[0].strip()  # Sadece malzeme adını al
-            formatted_ingredients += ingredient_name + ", "
-        else:
-            formatted_ingredients += parts[0].strip() + ", "
-
-    # Son virgülü ve boşluğu kaldır
-    formatted_ingredients = formatted_ingredients.rstrip(", ")
-
+        formatted_ingredient = parts[0].strip() if len(parts) > 1 else parts[0].strip()
+        formatted_ingredients.append(formatted_ingredient)
     return formatted_ingredients
-
-    
 
 
 def create_recommendation_object(recipe_row):
