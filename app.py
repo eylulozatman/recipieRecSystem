@@ -2,7 +2,7 @@ from flask import Flask, request, jsonify
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import linear_kernel
-from recipeRecDTO import RecipeRecommendationObject
+from recipeRecDTO import RecipeRecommendpiationObject
 from azure.storage.blob import BlobServiceClient, BlobClient, ContainerClient
 import requests
 import json
@@ -97,7 +97,7 @@ def format_data_ingredients(ingredients):
 
 
 def create_recommendation_object(recipe_row):
-    return RecipeRecommendationObject(
+    return RecipeRecommendpiationObject(
         title=recipe_row['recipe_name'],
         ingredients=recipe_row['ingredients'],
         description=recipe_row['directions'],  
