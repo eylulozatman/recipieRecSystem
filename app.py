@@ -2,21 +2,25 @@ from flask import Flask, request, jsonify
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import linear_kernel
-from recipeRecDTO import RecipeRecommendpiationObject
 from azure.storage.blob import BlobServiceClient, BlobClient, ContainerClient
 import requests
 import json
+from flask_cors import CORS
+from recipeRecDTO import RecipeRecommendationObject 
+
 
 app = Flask(__name__)
+CORS(app) 
 
 sas_token = "sp=racwdyti&st=2024-05-14T12:06:34Z&se=2024-06-04T20:06:34Z&sv=2022-11-02&sr=b&sig=%2FYZk57JEkcpWlOKhm9rl5y2roVMQbwl%2Fa%2FgyPS5uL5A%3D"
 blob_url = "https://blobrecipeimages.blob.core.windows.net/data-set-kaggle/recipes_with_no_tags_and_cuisine.csv?" + sas_token
-# Blob Service Client oluştur
+#Blob Service Client oluştur
 blob_service_client = BlobServiceClient(account_url="https://blobrecipeimages.blob.core.windows.net", credential=sas_token)
 
 # Container Client oluştur
 container_client = blob_service_client.get_container_client("data-set-kaggle")
 
+#blob_url="https://blobrecipeimages.blob.core.windows.net/data-set-kaggle/recipes_with_no_tags_and_cuisine.csv?"
 
 
 # Load recipe data
@@ -97,7 +101,7 @@ def format_data_ingredients(ingredients):
 
 
 def create_recommendation_object(recipe_row):
-    return RecipeRecommendpiationObject(
+    return RecipeRecommendationObject (
         title=recipe_row['recipe_name'],
         ingredients=recipe_row['ingredients'],
         description=recipe_row['directions'],  
@@ -105,7 +109,6 @@ def create_recommendation_object(recipe_row):
         timing=recipe_row['total_time'],
         photoPathURL=recipe_row['img_src']
     )
-
 
 @app.route('/add-recipe-to-dataset', methods=['POST'])
 def add_recipe_to_dataset():
@@ -165,8 +168,7 @@ def format_time(minutes):
     if not minutes:
         return ''
 
-    hours = minutes // 60
-    mins = minutes % 60
+    hours, mins = divmod(minutes, 60)
 
     if hours > 0 and mins > 0:
         return f"{hours} hrs {mins} mins"
@@ -174,7 +176,6 @@ def format_time(minutes):
         return f"{hours} hrs"
     else:
         return f"{mins} mins"
-
 
 if __name__ == '__main__':
     app.run()
