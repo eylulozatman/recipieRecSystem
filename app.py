@@ -3,25 +3,22 @@ import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import linear_kernel
 from azure.storage.blob import BlobServiceClient, BlobClient, ContainerClient
-import requests
-import json
 from flask_cors import CORS
-from recipeRecDTO import RecipeRecommendationObject 
+from nltk.stem import WordNetLemmatizer
+import re
+from recipeRecDTO import RecipeRecommendationObject
 
+import nltk
+nltk.download('wordnet')
+nltk.download('omw-1.4')
 
 app = Flask(__name__)
-CORS(app) 
+CORS(app)
 
 sas_token = "sp=racwdyti&st=2024-05-14T12:06:34Z&se=2024-06-04T20:06:34Z&sv=2022-11-02&sr=b&sig=%2FYZk57JEkcpWlOKhm9rl5y2roVMQbwl%2Fa%2FgyPS5uL5A%3D"
 blob_url = "https://blobrecipeimages.blob.core.windows.net/data-set-kaggle/recipes_with_no_tags_and_cuisine.csv?" + sas_token
-#Blob Service Client oluştur
 blob_service_client = BlobServiceClient(account_url="https://blobrecipeimages.blob.core.windows.net", credential=sas_token)
-
-# Container Client oluştur
 container_client = blob_service_client.get_container_client("data-set-kaggle")
-
-#blob_url="https://blobrecipeimages.blob.core.windows.net/data-set-kaggle/recipes_with_no_tags_and_cuisine.csv?"
-
 
 # Load recipe data
 recipe_data = pd.read_csv(blob_url)
@@ -29,75 +26,112 @@ recipe_data = recipe_data.dropna(subset=['ingredients', 'cuisine_path'])
 recipe_data['total_time'] = recipe_data['total_time'].astype(str)
 recipe_data['combined_features'] = recipe_data['total_time'] + ' ' + recipe_data['ingredients'] + ' ' + recipe_data['cuisine_path']
 
+lemmatizer = WordNetLemmatizer()
+
+def normalize_ingredient(ingredient):
+    ingredient = ingredient.lower()
+    ingredient = re.sub(r'\s*\(.*?\)\s*', '', ingredient)
+    ingredient = re.sub(r'\bfinely\b|\bchopped\b|\bsliced\b|\bdiced\b|\bground\b|\bfresh\b|\bdry\b|\bcrushed\b', '', ingredient)
+    ingredient = re.sub(r'\bslices\b|\bpieces\b|\bleaves\b|\bparts\b|\bstalks\b|\bheads\b', '', ingredient)
+    ingredient = ' '.join([lemmatizer.lemmatize(word) for word in ingredient.split()])
+    ingredient = re.sub(r'\s+', ' ', ingredient).strip()
+    return ingredient
+
+# Normalize ingredients in the dataset
+recipe_data['normalized_ingredients'] = recipe_data['ingredients'].apply(lambda x: ', '.join([normalize_ingredient(i) for i in x.split(',')]))
+recipe_data['combined_features'] = recipe_data['normalized_ingredients'] + ' ' + recipe_data['recipe_name'] + ' ' + recipe_data['directions'] + ' ' + recipe_data['cuisine_path']
+
 # Create TF-IDF matrix
 tfidf_vectorizer = TfidfVectorizer(stop_words='english')
 tfidf_matrix = tfidf_vectorizer.fit_transform(recipe_data['combined_features'])
 cosine_sim = linear_kernel(tfidf_matrix, tfidf_matrix)
-def get_recommendations(title=None, ingredients=None):
+
+def get_recommendations(title=None, ingredients=None, mealTypes=None, min_similarity_score=0.0):
+
     matching_recipes = recipe_data
 
+    
     if title:
-        matching_recipes = matching_recipes[matching_recipes['recipe_name'].str.contains(title, case=False)]
+        title_words = title.lower().split()
+        title_query = '|'.join(title_words)
+        title_condition = matching_recipes['cuisine_path'].str.contains(title_query, case=False, na=False) | \
+                          matching_recipes['recipe_name'].str.contains(title_query, case=False, na=False) | \
+                          matching_recipes['directions'].str.contains(title_query, case=False, na=False) | \
+                          matching_recipes['normalized_ingredients'].str.contains(title_query, case=False, na=False)
+        matching_recipes = matching_recipes[title_condition]
 
     if ingredients:
-        ingredient_query = '|'.join(ingredients)
-        matching_recipes = matching_recipes[matching_recipes['ingredients'].str.contains(ingredient_query, case=False)]
+        normalized_ingredients = '|'.join([normalize_ingredient(ingredient) for ingredient in ingredients.lower().split(',')])
+        ingredients_condition = matching_recipes['normalized_ingredients'].str.contains(normalized_ingredients, case=False, na=False) | \
+                                matching_recipes['directions'].str.contains(normalized_ingredients, case=False, na=False) | \
+                                matching_recipes['cuisine_path'].str.contains(normalized_ingredients, case=False, na=False) | \
+                                matching_recipes['recipe_name'].str.contains(normalized_ingredients, case=False, na=False)
+        matching_recipes = matching_recipes[ingredients_condition]
+
+    if mealTypes:
+        mealType_queries = '|'.join([mealType.lower().rstrip('s') for mealType in mealTypes])
+        mealType_condition = matching_recipes['cuisine_path'].str.contains(mealType_queries, case=False, na=False)
+        matching_recipes = matching_recipes[mealType_condition]
 
     if matching_recipes.empty:
         return []
 
-    combined_features_with_ingredients = matching_recipes['total_time'] + ' ' + matching_recipes['ingredients'] + ' ' + matching_recipes['cuisine_path']
-    tfidf_matrix_with_ingredients = tfidf_vectorizer.fit_transform(combined_features_with_ingredients)
+    combined_features = matching_recipes['normalized_ingredients'] + ' ' + matching_recipes['recipe_name'] + ' ' + matching_recipes['directions'] + ' ' + matching_recipes['cuisine_path']
+    tfidf_matrix_with_ingredients = tfidf_vectorizer.fit_transform(combined_features)
     cosine_sim_with_ingredients = linear_kernel(tfidf_matrix_with_ingredients, tfidf_matrix_with_ingredients)
-    
-    # Calculate similarity scores for matched recipes
+
     sim_scores = []
     for i in range(len(matching_recipes)):
-        sim_scores.append((i, cosine_sim_with_ingredients[i,-1]))  # similarity score for the last recipe
-    
+        sim_scores.append((i, cosine_sim_with_ingredients[i, -1]))
+
     sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)
-    sim_recipes = sim_scores[:5]  # Take the top 5 similar recipes
-    recipe_indices = [i[0] for i in sim_recipes]
-    recommended_recipes = [matching_recipes.iloc[idx] for idx in recipe_indices]
+    sim_recipes = [idx for idx, score in sim_scores if score >= min_similarity_score][:5]
+    recommended_recipes = [matching_recipes.iloc[idx] for idx in sim_recipes]
 
     return recommended_recipes
 
-
-
-
-@app.route('/hello', methods=['GET'])
-def hello():
-    return "hellooooo"
 
 
 @app.route('/get-recommendations', methods=['GET'])
 def recommend():
     title = request.args.get('title')
     ingredients = request.args.get('ingredients')
-    
+    mealType = request.args.get('mealNames')
+
     if not title and not ingredients:
         return jsonify({'error': 'Please provide at least one parameter.'}), 400
 
     if ingredients and ":" in ingredients:
         ingredients = format_data_ingredients(ingredients)
 
-    recommendations = get_recommendations(title, ingredients)
+    if mealType and "," in mealType:
+        mealType = mealType.split(',')
+
+
+    recommendations = get_recommendations(title, ingredients, mealType)
+
 
     if not recommendations:
-        return jsonify({'message': 'No recipes found matching the criteria.'}), 404
+        return jsonify({'message': 'No similar recipes found.'}), 200
 
-    # Convert recommendations to RecipeRecommendationObject
     recommendation_objects = [create_recommendation_object(recipe) for recipe in recommendations]
 
     return jsonify({'recommendations': [vars(obj) for obj in recommendation_objects]})
+    
 
 def format_data_ingredients(ingredients):
     formatted_ingredients = []
     for ingredient in ingredients.split(','):
-        parts = ingredient.strip().split(':')
-        formatted_ingredient = parts[0].strip() if len(parts) > 1 else parts[0].strip()
-        formatted_ingredients.append(formatted_ingredient)
-    return formatted_ingredients
+        if ":" in ingredient:
+            # ":" karakterinden böl
+            parts = ingredient.split(':')
+            # İlk kısmı al, boşlukları kaldır
+            formatted_ingredient = parts[0].strip()
+
+            formatted_ingredients.append(formatted_ingredient)
+        else:
+            formatted_ingredients.append(ingredient.strip())
+    return ', '.join(formatted_ingredients)
 
 
 def create_recommendation_object(recipe_row):
@@ -109,6 +143,10 @@ def create_recommendation_object(recipe_row):
         timing=recipe_row['total_time'],
         photoPathURL=recipe_row['img_src']
     )
+
+@app.route('/hello', methods=['GET'])
+def hello():
+    return "hellooooo"
 
 @app.route('/add-recipe-to-dataset', methods=['POST'])
 def add_recipe_to_dataset():
