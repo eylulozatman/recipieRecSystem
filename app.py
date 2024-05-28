@@ -16,17 +16,22 @@ app = Flask(__name__)
 CORS(app)
 
 sas_token = "sp=racwdyti&st=2024-05-14T12:06:34Z&se=2024-06-04T20:06:34Z&sv=2022-11-02&sr=b&sig=%2FYZk57JEkcpWlOKhm9rl5y2roVMQbwl%2Fa%2FgyPS5uL5A%3D"
-blob_url = "https://blobrecipeimages.blob.core.windows.net/data-set-kaggle/recipes_with_no_tags_and_cuisine.csv?" + sas_token
 blob_service_client = BlobServiceClient(account_url="https://blobrecipeimages.blob.core.windows.net", credential=sas_token)
 container_client = blob_service_client.get_container_client("data-set-kaggle")
 
 # Load recipe data
+blob_url = "https://blobrecipeimages.blob.core.windows.net/data-set-kaggle/recipes_with_no_tags_and_cuisine.csv?" + sas_token
 recipe_data = pd.read_csv(blob_url)
 recipe_data = recipe_data.dropna(subset=['ingredients', 'cuisine_path'])
-recipe_data['total_time'] = recipe_data['total_time'].astype(str)
-recipe_data['combined_features'] = recipe_data['total_time'] + ' ' + recipe_data['ingredients'] + ' ' + recipe_data['cuisine_path']
 
+# Preprocess recipe data
 lemmatizer = WordNetLemmatizer()
+
+def preprocess_data(data):
+    data['total_time'] = data['total_time'].astype(str)
+    data['combined_features'] = data['total_time'] + ' ' + data['ingredients'] + ' ' + data['cuisine_path']
+    data['normalized_ingredients'] = data['ingredients'].apply(lambda x: ', '.join([normalize_ingredient(i) for i in x.split(',')]))
+    data['combined_features'] = data['normalized_ingredients'] + ' ' + data['recipe_name'] + ' ' + data['directions'] + ' ' + data['cuisine_path']
 
 def normalize_ingredient(ingredient):
     ingredient = ingredient.lower()
@@ -37,29 +42,40 @@ def normalize_ingredient(ingredient):
     ingredient = re.sub(r'\s+', ' ', ingredient).strip()
     return ingredient
 
-# Normalize ingredients in the dataset
-recipe_data['normalized_ingredients'] = recipe_data['ingredients'].apply(lambda x: ', '.join([normalize_ingredient(i) for i in x.split(',')]))
-recipe_data['combined_features'] = recipe_data['normalized_ingredients'] + ' ' + recipe_data['recipe_name'] + ' ' + recipe_data['directions'] + ' ' + recipe_data['cuisine_path']
+preprocess_data(recipe_data)
 
 # Create TF-IDF matrix
 tfidf_vectorizer = TfidfVectorizer(stop_words='english')
 tfidf_matrix = tfidf_vectorizer.fit_transform(recipe_data['combined_features'])
 cosine_sim = linear_kernel(tfidf_matrix, tfidf_matrix)
 
-def get_recommendations(title=None, ingredients=None, mealTypes=None, min_similarity_score=0.0):
+# Synonyms dictionary
+synonyms = {
+    "meat": ["beef", "chicken", "pork", "lamb"],
+    "cake": ["pie", "dessert", "pastry"],
+    "burger": ["cheeseburger", "hamburger", "sandwich"],
+    "pasta": ["spaghetti"]
+}
 
-    matching_recipes = recipe_data
+def get_synonyms(word):
+    for key, value in synonyms.items():
+        if word in value:
+            return value
+    return [word]
 
+def get_recommendations(title=None, ingredients=None, mealTypes=None):
+    matching_recipes = recipe_data.copy()
     
     if title:
         title_words = title.lower().split()
-        title_query = '|'.join(title_words)
+        expanded_title_words = [get_synonyms(word) for word in title_words]
+        title_query = '|'.join('|'.join(synonym) for synonym in expanded_title_words)
         title_condition = matching_recipes['cuisine_path'].str.contains(title_query, case=False, na=False) | \
                           matching_recipes['recipe_name'].str.contains(title_query, case=False, na=False) | \
                           matching_recipes['directions'].str.contains(title_query, case=False, na=False) | \
                           matching_recipes['normalized_ingredients'].str.contains(title_query, case=False, na=False)
         matching_recipes = matching_recipes[title_condition]
-
+    
     if ingredients:
         normalized_ingredients = '|'.join([normalize_ingredient(ingredient) for ingredient in ingredients.lower().split(',')])
         ingredients_condition = matching_recipes['normalized_ingredients'].str.contains(normalized_ingredients, case=False, na=False) | \
@@ -85,12 +101,9 @@ def get_recommendations(title=None, ingredients=None, mealTypes=None, min_simila
         sim_scores.append((i, cosine_sim_with_ingredients[i, -1]))
 
     sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)
-    sim_recipes = [idx for idx, score in sim_scores if score >= min_similarity_score][:5]
-    recommended_recipes = [matching_recipes.iloc[idx] for idx in sim_recipes]
+    recommended_recipes = [matching_recipes.iloc[idx] for idx, score in sim_scores[:5]]
 
     return recommended_recipes
-
-
 
 @app.route('/get-recommendations', methods=['GET'])
 def recommend():
