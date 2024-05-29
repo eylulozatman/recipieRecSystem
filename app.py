@@ -101,9 +101,19 @@ def get_recommendations(title=None, ingredients=None, mealTypes=None):
         sim_scores.append((i, cosine_sim_with_ingredients[i, -1]))
 
     sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)
-    recommended_recipes = [matching_recipes.iloc[idx] for idx, score in sim_scores[:5]]
+     # Filter out duplicate img_src
+    seen_img_src = set()
+    recommended_recipes = []
+    for idx, score in sim_scores:
+        recipe = matching_recipes.iloc[idx]
+        if recipe['img_src'] not in seen_img_src:
+            recommended_recipes.append(recipe)
+            seen_img_src.add(recipe['img_src'])
+        if len(recommended_recipes) >= 5:
+            break
 
     return recommended_recipes
+
 
 @app.route('/get-recommendations', methods=['GET'])
 def recommend():
