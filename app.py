@@ -15,6 +15,8 @@ nltk.download('omw-1.4')
 app = Flask(__name__)
 CORS(app)
 
+#a.ipynb
+
 sas_token = "sp=racwdyti&st=2024-05-14T12:06:34Z&se=2024-06-04T20:06:34Z&sv=2022-11-02&sr=b&sig=%2FYZk57JEkcpWlOKhm9rl5y2roVMQbwl%2Fa%2FgyPS5uL5A%3D"
 blob_service_client = BlobServiceClient(account_url="https://blobrecipeimages.blob.core.windows.net", credential=sas_token)
 container_client = blob_service_client.get_container_client("data-set-kaggle")
